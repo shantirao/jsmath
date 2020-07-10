@@ -1,0 +1,418 @@
+<!DOCTYPE html><html>
+<head>
+<title>Matching coordinate frames</title>
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<script language="javascript" type="text/javascript" src="common.js"  ></script>
+<script language="javascript" type="text/javascript" src="matrix.js"  ></script>
+<script language="javascript" type="text/javascript" src="forms.js"  ></script>
+<link rel=stylesheet href=style.css>
+</head>
+<body style="background: #909090;border-top:0px; margin:0px; font-family: sans-serif">
+
+<div class=section id=divTracker>
+<H1>Solves <a href="https://en.wikipedia.org/wiki/Wahba's_problem">Wahba's Problem</a></H1>
+<div class=pane>
+<button onClick="trackerAction('Initialize')">Initialize</button>
+<button onClick="trackerAction('GoBirdBath')">Birdbath</button>
+<button onClick="trackerGoAndMeasure()">Go and measure</button>
+<button onClick="trackerMeasure()">Measure</button>
+<button onClick="trackerAction('FindReflector 1')">Search</button>
+//  ['Initialize','SetMeasurementMode 0','SetStatisticMode 0 0','GoBirdBath']
+//['GetSystemSettings','GetUnits','GetMeasurementMode','GetStatisticMode']
+
+<br><br>
+<div class=pane align=center>
+<button align=center onClick="">Up</button><br>
+<button onClick="">Left</button><button onClick="">Stop</button><button onClick="">Right</button><br>
+<button onClick="">Down</button>
+</div>
+<br>Capturing: <span id=currentFocus></span>
+<br>
+<span id=trackerStatus>status</span>
+</div>
+<div class=pane id=fixed >
+<span class=block id=fixed.apriori></span><span class=block id=fixed.measured></span>
+</div>
+<div class=pane id=moveable >
+<span class=block id=moveable.apriori></span><span class=block id=moveable.measured></span>
+</div>
+</div>
+
+<table width=100%><tr>
+<td class=layout>
+<div class=section id=divWorkspace>
+<H1>Variables</H1>
+<span id=workspace ></span>
+</div>
+</td>
+<td id=inspectors class=layout>
+</td>
+</tr></table>
+<div class=section id=divConsole style="overflow:auto">
+<H1>Console</H1>
+<span id=console ></span>
+</div>
+
+<span style="background:white" id=debug></span>
+
+<script>
+
+function setStatus(status)
+{
+  $('trackerStatus').innerHTML = status;
+}
+
+function trackerAction(cmd)
+{
+  rexec('/action',setStatus,'command='+escape(cmd));
+//  ['Initialize','SetMeasurementMode 0','SetStatisticMode 0 0','GoBirdBath']
+//['GetSystemSettings','GetUnits','GetMeasurementMode','GetStatisticMode']
+//GoAndMeasure x y z
+//FindReflector radius
+}
+
+function trackerGoAndMeasure()
+{
+   var cc = currentCapture;
+   var location = get(cc);
+   function handler(value)
+   {
+    if (cc)
+      put(cc,value);
+    else
+      writeConsole(value);
+   }
+   rexec('/measure',handler,'command=GoAndMeasure '+escape(location)+'&result=position');
+   recalculate();
+}
+
+function trackerMeasure()
+{
+  var cc = currentCapture;
+   function handler(value)
+   {
+    if (cc)
+      put(cc,value);
+    else
+      writeConsole(value);
+   }
+   rexec('/measure',handler,'command=StartMeasurement&result=position');
+   recalculate();
+}
+
+// In the generalized solution, each of these objects would have a Type or Interface name,
+// and there would be a list of functions that can act on interfaces, etc.
+// For now, KISS
+
+var fields = {}; // fixed.apriori.A: {ui object}
+
+currentCapture = ''; //field name we're saving to
+
+dataHistory = [];
+
+workspace={
+	fixed: {
+		apriori: {A:'',B:'',C:'',D:'',E:'',F:''},
+		measured:{A:'',B:'',C:'',D:'',E:'',F:''},
+		},
+	moveable: {
+		apriori: {A:'',B:'',C:'',D:'',E:'',F:''},
+		measured:{A:'',B:'',C:'',D:'',E:'',F:''},
+		},
+};
+
+function listify(t)
+{
+	var r;
+    if (t.indexOf(',') != -1)
+	  r = t.trim().split(',');
+	else r = t.trim().split(/[\s]+/g);
+	if (r[r.length-1] == null) r.pop();
+	return r.map(Number);
+}
+
+function matrixify(t)
+{
+  var r = t.split('\n');
+  if (r[r.length-1].length == 0) r.pop();
+  r = r.map(listify);
+  if (r[r.length-1] == null || r[r.length-1].length == 0) r.pop();
+  return r;
+}
+
+function alignPointClouds(obj)
+{
+/*
+designPositions=[  35 0 0; -17.5 30.3 0;-17.5 -30.3 0; 0 35 -70]';
+offsetA = mean(designPositions,2);
+
+rotm = rotationMatrix(normr([1,2,3]),pi/3);
+offset = [124,567,890]';
+measuredPositions=rotm*designPositions + offset;
+
+N = size(designPositions,2);
+weights = ones(1,N);
+weights = 1/length(weights);
+
+frameA = designPositions - offsetA;
+offsetB = mean(measuredPositions,2);
+frameB = measuredPositions - offsetB;
+
+B = zeros(3,3);
+for i=1:N % [3x1] * [1x3] gives the [3x3] outer product
+  B = B + frameB(:,i) * frameA(:,i)';
+end
+
+[U,S,V] = svd(B);
+
+M = diag([1 1 det(U)*det(V)]);
+
+R = U * M * V';
+disp('Inferred rotation')
+disp(R)
+
+inferredPositions = R * (designPositions - offsetA) + offsetB;
+
+*/
+
+var pointNames = []; // 'A','B','C',...
+
+ for (var n in obj.apriori)
+    if (obj.apriori[n] && obj.measured[n]) pointNames.push(n); // ['A','B','C',...]
+
+ designPositions = new Matrix(pointNames.map(function(x){return listify(obj.apriori[x]);})).transpose();
+ measuredPositions = new Matrix(pointNames.map(function(x){return listify(obj.measured[x])})).transpose();
+
+ if (measuredPositions.length < 3 || measuredPositions.length != designPositions.length) return null;
+
+ offsetA = designPositions.average(true); //column vector
+ offsetB = measuredPositions.average(true);
+
+ frameA = designPositions.add(offsetA,-1);
+ frameB = measuredPositions.add(offsetB,-1);
+
+ var B = Matrix.zeros(3);
+ B.zero();
+
+ for (var i=0; i<pointNames.length; i++)
+ {
+  //  B.addTo(Matrix.column(measuredPositions[i]).times(Matrix.row(designPositions[i])));
+  var x = frameB.column(i);
+  var y = frameA.column(i).transpose();
+  B.addTo(x.times(y));
+  //row/col opposite of MATLAB because these are row-major
+ }
+
+ var [U,S,V] = B.svd();
+
+ var M = Matrix.diagonal([1, 1, U.det3()*V.det3()]);
+
+ var R = U.times(M).times(V.transpose());
+
+ var prediction = R.times(frameA).add(offsetB);
+ var differences = measuredPositions.add(prediction,-1);
+
+ var euler = [0,1,2].map(function(x){return (180/Math.PI) * Math.asin(R.at(x,x))});
+
+//R is rotation matrix in the lab frame.
+z = new Matrix(3,1,[0,0,-1]);
+a = R.add(Matrix.identity(3),-1);
+Rz = a.times(z); 
+
+XY = new Matrix(2,2,[a.at(0,0),a.at(0,1),a.at(1,0),a.at(1,1)])
+axis = Matrix.solve(XY,new Matrix(2,1,Rz.data));
+axis.data.push(1)
+axis.rows++;
+ 
+
+ return {differences: differences, offset: offsetB.add(R.times(offsetA),-1), rotation:R, euler: euler, angle:Math.acos((R.trace()-1)/2), axis:axis}
+}
+
+
+function test(workspace)
+{
+ workspace.moveable.apriori.A ='35 0 0';
+ workspace.moveable.apriori.B ='-17.5 30.3 0';
+ workspace.moveable.apriori.C ='-17.5 -30.3 0';
+ workspace.moveable.apriori.D ='0 35 -70';
+
+ workspace.moveable.measured.A ='142.7500  593.8028  877.5481';
+ workspace.moveable.measured.B =' 95.7500  573.0772  909.7319';
+ workspace.moveable.measured.C ='133.5000  534.1200  882.7200';
+ workspace.moveable.measured.D =' 62.2935  590.7019  848.1009';
+
+ workspace.body2 = alignPointClouds(workspace.moveable);
+
+ var points = workspace.moveable.apriori;
+ var body = workspace.body2;
+
+for (var i in points)
+{
+  if (!points[i]) continue;
+  var p = new Matrix(points[i]).transpose();
+  var p1 = body.rotation.times(p);
+  var p2 = p1.add(body.offset,1);
+//writeConsole(p1);
+writeConsole(p2);
+}
+ inspect('moveable.apriori')
+ inspect('body2')
+ writeWorkspace();
+}
+
+test(workspace)
+
+function get(n)
+{
+ var r = workspace;
+ n = n.split('.');
+ while (n.length)
+ {
+//  writeConsole(n[0]+' '+ r[n[0]]+' '+r.toSource())
+ 	r = r[n.shift()];
+ 	}
+ return r;
+}
+
+function put(n,v)
+{
+ dataHistory.push({n:n,v:get(n)})
+
+ var r = workspace;
+ n = n.split('.');
+ while (n.length>1)
+ 	r = r[n.shift()];
+ r[n[0]] = v;
+
+ if (n in fields) fields[n].value=v;
+}
+
+function saveChange(name,value)
+{
+ put(name,value)
+ calculate()
+ writeWorkspace();
+}
+
+function notifyFocus(x,id)
+{
+ x.style.background = "yellow";
+ $('currentFocus').innerHTML = currentCapture = id+'.'+x.name;
+}
+
+function onBlur(x)
+{
+ this.style.background = "";
+}
+
+function registerInput(x,id)
+{
+ fields[id+'.'+x.name] = x;
+}
+
+function setup()
+{
+ var fields = ['fixed.apriori','fixed.measured','moveable.apriori','moveable.measured'];
+
+ for (var i in fields)
+ {
+   $(fields[i]).appendChild(createForm(get(fields[i]),function(v){saveChange(fields[i],v)},
+   	{
+   	 title:fields[i],
+   	 onFocus:function(){notifyFocus(this,fields[i])},
+   	 onBlur:onBlur,
+     registerInput:registerInput,
+   	}))
+ }
+}
+
+function resizeLastNode(node,margin)
+{
+	var windowHeight;
+
+	if (typeof window.innerWidth != 'undefined')
+		windowHeight = window.innerHeight;
+	else if (typeof document.documentElement != 'undefined'
+			&& typeof document.documentElement.clientWidth != 'undefined'
+			&& document.documentElement.clientWidth != 0) // IE6 in standards compliant mode (i.e. with a valid doctype as the first line in the document)
+		windowHeight = document.documentElement.clientHeight;
+	else // older versions of IE
+		windowHeight = document.getElementsByTagName('body')[0].clientHeight;
+
+	node.style.height = (windowHeight - node.offsetTop  - (margin||0))+ "px";
+}
+
+function expand(prefix,obj)
+{
+  	var s = [];
+  	function f(prefix, obj)
+  	{
+  		for (var n in obj)
+  			if (typeof obj[n] === 'object' && obj[n].constructor.name != 'Array')
+  				f(prefix+'.'+n,obj[n]);
+  			else
+  				s.push('<tr><td><a onClick=\"inspect(\''+prefix+'.'+n+'\')\">'+prefix+'.'+n+'</a></td><td>'+obj[n].toString()+'</td></tr>');
+  	}
+  	f(prefix,obj);
+	return '<table>'+s.join('\n')+'</table>';
+}
+
+function addInspector(title,content)
+{
+  var n = document.createElement('div');
+  n.className ='section';
+  n.style.display = 'inline-block';
+  n.innerHTML = '<H1>Inspecting '+title+' <span class=click onClick="closeInspector(this)">[X]</span></H1><tt>'+content+'</tt>';
+  $('inspectors').appendChild(n);
+}
+
+function closeInspector(self)
+{
+  var n=self.parentNode.parentNode;
+  n.parentNode.removeChild(n);
+}
+
+function enumerate(prefix,obj)
+{
+  	var s = [];
+
+    if (typeof obj === 'object' && obj.constructor.name != 'Array')
+	{
+		if (prefix.length) prefix = prefix + '.';
+		for (var n in obj)
+		 if (obj[n] && typeof(obj[n]) != 'function')
+  			s.push('<tr><td><a onClick=\"inspect(\''+prefix+n+'\')\">'+prefix+n+'</a></td><td>'+obj[n].toString().replace(/\n/g,'<br>')+'</td></tr>');
+  		return '<table>'+s.join('\n')+'</table>';
+  	}
+  	return prefix+'='+obj.toString();
+}
+
+function inspect(n) //pane, n
+{
+  addInspector(n,'<tt>'+enumerate(n,get(n))+'</tt>');
+  resizeLastNode($('divConsole'),45)
+}
+
+function writeWorkspace()
+{
+ 	$('workspace').innerHTML = '<tt>'+enumerate('',workspace)+'</tt><br>';
+	resizeLastNode($('divConsole'),45)
+}
+
+function writeConsole(text)
+{
+ $('console').innerHTML += '<tt>' + text.toString().replace(/\n/g,'<br>')+ '</tt><br>'
+ resizeLastNode($('divConsole'),45)
+}
+
+function rexec(command,handler)
+{
+ writeConsole('<b>&gt;</b>' + command)
+ loadXMLDoc('/exec?' + command, function(x) {if (x) writeConsole(x);handler(x)})
+}
+
+setup()
+resizeLastNode($('divConsole'),45)
+</script>
+</body>
+</html>
